@@ -1,241 +1,312 @@
-#include <iostream>
-#include <random>
-#include <mutex>
-#include <thread>
-#include <vector>
-#include <chrono>
-#include <semaphore.h>
-#include <condition_variable>
-#include <atomic>
+#include <iostream> // Библиотека для ввода-вывода
+#include <random>   // Библиотека для генерации случайных чисел
+#include <mutex>    // Библиотека для мьютексов
+#include <thread>   // Библиотека для работы с потоками
+#include <vector>   // Библиотека для работы с векторами
+#include <chrono>   // Библиотека для работы с временем
+#include <semaphore.h> // Библиотека для работы с POSIX семафорами
+#include <condition_variable> // Библиотека для условных переменных
+#include <atomic>   // Библиотека для атомарных операций
 
-#define NUM_ITERATIONS 500// Количество итераций для потоков
+#define N 500 // Константа, определяющая количество итераций для потоков
 
 using namespace std;
 
-// Функция для генерации случайного ASCII символа
-void generateRandomChar(char& ch) {
-    random_device rd; // Генератор случайных чисел
-    mt19937 gen(rd()); // Инициализация генератора
-    uniform_int_distribution<> dist(32, 126); // Распределение для символов ASCII
-    ch = static_cast<char>(dist(gen)); // Генерация символа
+// Функция для генерации случайного символа ASCII
+void randomSymbols(char& symbol) { 
+    random_device rd; // Использует аппаратный генератор случайных чисел
+    mt19937 gen(rd()); // Инициализация генератора случайных чисел
+    uniform_int_distribution<> dis(32, 126); // Определение диапазона ASCII символов
+    symbol = static_cast<char>(dis(gen)); // Генерация случайного символа
 }
 
-// Простая реализация семафора
-class SimpleSemaphore {
+// Класс для реализации семафора
+class Semaphore { 
 public:
-    SimpleSemaphore(int count) : count(count) {
-        sem_init(&sem, 0, count); // Инициализация семафора с заданным количеством
+    // Конструктор, инициализирующий семафор с начальным значением
+    Semaphore(int initialCount) : iCount(initialCount) {
+        sem_init(&sem, 0, initialCount); // Инициализация POSIX семафора
     }
     
-    void acquire() {
-        sem_wait(&sem); // Захват семафора
+    // Метод для захвата ресурса
+    void acquire() { 
+        sem_wait(&sem); // Уменьшает счётчик семафора
     }
 
-    void release() {
-        sem_post(&sem); // Освобождение семафора
+    // Метод для освобождения ресурса
+    void release() { 
+        sem_post(&sem); // Увеличивает счётчик семафора
     }
 
 private:
-    sem_t sem; // POSIX семафор
-    int count; // Количество доступных ресурсов
+    sem_t sem;  // Объект семафора
+    int iCount; // Начальное значение семафора
 };
 
-// Упрощенный семафор с блокировкой
-class SimpleSemaphoreSlim {
+// Класс для реализации упрощенного семафора
+class SemaphoreSlim { 
 public:
-    SimpleSemaphoreSlim(int initialCount, int maxCount) : count(initialCount), maxCount(maxCount) {}
+    // Конструктор
+    SemaphoreSlim(int initialCount, int maxCount) : iCount(initialCount), mCount(maxCount) {}
 
-    void acquire() {
-        unique_lock<mutex> lock(mtx); // Блокировка мьютекса
-        cv.wait(lock, [this]() { // Ожидание, пока счетчик не станет больше 0
-            return count > 0;
+    // Метод для захвата семафора
+    void acquire() { 
+        unique_lock<mutex> lock(mtx); // Защита доступа к iCount
+        cv.wait(lock, [this]() { // Ожидание, пока счётчик не станет > 0
+            return iCount > 0;
         });
-        --count; // Уменьшение счетчика
+        --iCount; // Уменьшаем счётчик, если семафор захвачен потоком
     }
 
-    void release() {
-        lock_guard<mutex> lock(mtx); // Блокировка мьютекса
-        if (count < maxCount) {
-            ++count; // Увеличение счетчика
-            cv.notify_one(); // Уведомление одного ожидающего потока
+    // Метод для освобождения семафора
+    void release() { 
+        lock_guard<mutex> lock(mtx); // Защита доступа к счётчику
+        if (iCount < mCount) {
+            ++iCount; // Увеличиваем счётчик
+            cv.notify_one(); // Уведомляет один из ожидающих потоков
         }
     }
 
 private:
     mutex mtx; // Мьютекс для защиты доступа
     condition_variable cv; // Условная переменная для ожидания
-    int count, maxCount; // Текущий и максимальный счетчики
+    int iCount, mCount; // Начальное и максимальное значение счётчиков семафора
 };
 
-// Барьер для синхронизации потоков
-class SimpleBarrier {
+// Класс для реализации барьера
+class Barrier { 
 public:
-    SimpleBarrier(int numThreads) : totalThreads(numThreads), waitingThreads(0) {}
+    // Конструктор
+    Barrier(int count) : initialCount(count), maxCount(count), generationCount(0) {}
 
-    void wait() {
-        unique_lock<mutex> lock(mtx); // Блокировка мьютекса
-        waitingThreads++; // Увеличение счетчика ожидающих потоков
-        if (waitingThreads == totalThreads) { // Если все потоки достигли барьера
-            waitingThreads = 0; // Сброс счетчика
-            cv.notify_all(); // Уведомление всех ожидающих потоков
-        } else {
-            cv.wait(lock); // Ожидание, пока не будет уведомление
+    // Метод для ожидания достижения барьера всеми потоками
+    void wait() { 
+        unique_lock<mutex> lock(mtx); // Защита доступа переменных
+
+        int initialGen = generationCount; // Запоминаем текущее поколение
+        if (--initialCount == 0) { // Если все потоки достигли барьера
+            generationCount++; // Увеличиваем счётчик поколений
+            initialCount = maxCount; // Сбрасываем счётчик
+            cv.notify_all(); // Уведомляем все ожидающие потоки
+        }
+        else {
+            cv.wait(lock, [this, initialGen] { // Ожидаем, пока поколение не изменится
+                return initialGen != generationCount;
+            });
         }
     }
 
 private:
     mutex mtx; // Мьютекс для защиты доступа
-    condition_variable cv; // Условная переменная для ожидания
-    int totalThreads, waitingThreads; // Общее количество потоков и количество ожидающих
+    condition_variable cv; // Условная переменная
+    int initialCount, maxCount, generationCount; // Счётчики для управления барьером
 };
 
-// Монитор для синхронизации
-class SimpleMonitor {
+// Класс для реализации монитора
+class Monitor { 
 public:
-    SimpleMonitor() : ready(false) {}
+    Monitor() : isReady(false) {} // Инициализация состояния
 
-    void lock() {
-        unique_lock<mutex> lock(mtx); // Блокировка мьютекса
-        while (ready) { // Ожидание, если монитор уже занят
-            cv.wait(lock); // Ожидание уведомления
+    // Метод для захвата монитора
+    void locker() { 
+        unique_lock<mutex> lock(mtx); // Защита доступа к переменным
+
+        while(isReady) { // Блокировка, если монитор уже захвачен
+            cv.wait(lock); // Ожидание освобождения монитора
         }
-        ready = true; // Установка состояния готовности
+        isReady = true; // Устанавливаем состояние захваченности
     }
 
-    void unlock() {
-        lock_guard<mutex> lock(mtx); // Блокировка мьютекса
-        ready = false; // Освобождение монитора
-        cv.notify_one(); // Уведомление одного ожидающего потока
+    // Метод для освобождения монитора
+    void unlocker() { 
+        lock_guard<mutex> lock(mtx); // Защита доступа
+        isReady = false; // Освобождение монитора
+        cv.notify_one(); // Уведомляет один из ожидающих потоков
     }
 
 private:
     mutex mtx; // Мьютекс для защиты доступа
-    condition_variable cv; // Условная переменная для ожидания
-    bool ready; // Флаг занятости монитора
+    condition_variable cv; // Условная переменная
+    bool isReady; // Состояние захваченности монитора
 };
 
-// Функция для потоков с мьютексом
-void threadWithMutex(char& ch, mutex& mtx, vector<char>& symbols) {
-    for (int i = 0; i < NUM_ITERATIONS; i++) {
-        generateRandomChar(ch); // Генерация символа
-        lock_guard<mutex> lock(mtx); // Блокировка мьютекса
-        symbols.push_back(ch); // Добавление символа в вектор
+// Функция для работы с мьютексом
+void threadMutex(char& symbol, mutex& mtx, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) { 
+        randomSymbols(symbol); // Генерация символа
+        lock_guard<mutex> lock(mtx); // Захват мьютекса
+        allSymbols.push_back(symbol); // Добавление символа в вектор
     }
 }
 
-// Функция для потоков с семафором
-void threadWithSemaphore(char& ch, SimpleSemaphore& sem, vector<char>& symbols) {
-    for (int i = 0; i < NUM_ITERATIONS; i++) {
-        generateRandomChar(ch); // Генерация символа
+// Функция для работы с семафором
+void threadSemaphore(char& symbol, Semaphore& sem, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) {
+        randomSymbols(symbol); // Генерация символа
         sem.acquire(); // Захват семафора
-        symbols.push_back(ch); // Добавление символа в вектор
+        allSymbols.push_back(symbol); // Добавление символа в вектор
         sem.release(); // Освобождение семафора
     }
 }
 
-// Функция для потоков с упрощенным семафором
-void threadWithSemaphoreSlim(char& ch, SimpleSemaphoreSlim& semSlim, vector<char>& symbols) {
-    for (int i = 0; i < NUM_ITERATIONS; i++) {
-        generateRandomChar(ch); // Генерация символа
+// Функция для работы с упрощенным семафором
+void threadSemaphoreSlim(char& symbol, SemaphoreSlim& semSlim, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) {
+        randomSymbols(symbol); // Генерация символа
         semSlim.acquire(); // Захват семафора
-        symbols.push_back(ch); // Добавление символа в вектор
+        allSymbols.push_back(symbol); // Добавление символа в вектор
         semSlim.release(); // Освобождение семафора
     }
 }
 
-// Функция для потоков с барьером
-void threadWithBarrier(char& ch, SimpleBarrier& barrier, vector<char>& symbols) {
-    for (int i = 0; i < NUM_ITERATIONS; i++) {
-        generateRandomChar(ch); // Генерация символа
+// Функция для работы с барьером
+void threadBarrier(char& symbol, Barrier& barrier, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) {
+        randomSymbols(symbol); // Генерация символа
         barrier.wait(); // Ожидание достижения барьера
-        symbols.push_back(ch); // Добавление символа в вектор
+        allSymbols.push_back(symbol); // Добавление символа в вектор
     }
 }
 
-// Функция для потоков с монитором
-void threadWithMonitor(char& ch, SimpleMonitor& monitor, vector<char>& symbols) {
-    for (int i = 0; i < NUM_ITERATIONS; i++) {
-        generateRandomChar(ch); // Генерация символа
-        monitor.lock(); // Захват монитора
-        symbols.push_back(ch); // Добавление символа в вектор
-        monitor.unlock(); // Освобождение монитора
+// Функция для работы с монитором
+void threadMonitor(char& symbol, Monitor& monitor, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) {
+        randomSymbols(symbol); // Генерация символа
+        monitor.locker(); // Захват монитора
+        allSymbols.push_back(symbol); // Добавление символа в вектор
+        monitor.unlocker(); // Освобождение монитора
     }
 }
 
-// Главная функция
+// Функция для работы со спинлоком
+void threadSpinLock(char& symbol, atomic_flag& spinLock, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) {
+        randomSymbols(symbol); // Генерация символа
+        while (spinLock.test_and_set(memory_order_acquire)) {} // Ожидание, пока флаг не будет сброшен
+        allSymbols.push_back(symbol); // Добавление символа в вектор
+        spinLock.clear(memory_order_release); // Сброс флага
+    }
+}
+
+// Функция для работы с спин-ожиданием
+void threadSpinWait(char& symbol, atomic_flag& spinLock, vector<char>& allSymbols) { 
+    for (int i = 0; i < N; i++) {
+        randomSymbols(symbol); // Генерация символа
+        while (spinLock.test_and_set(memory_order_acquire)) { // Ожидание, пока флаг не будет сброшен
+            this_thread::yield(); // Передача управления другим потокам
+        }
+        allSymbols.push_back(symbol); // Добавление символа в вектор
+        spinLock.clear(memory_order_release); // Сброс флага
+    }
+}
+
+// Основная функция
 int main() {
-    system("chcp 65001"); 
-    vector<char> symbols; // Вектор для хранения символов
-    mutex mtx; // Мьютекс для защиты доступа
-    char ch; // Переменная для символа
-
+    vector<char> allSymbols; // Вектор для хранения сгенерированных символов
+    mutex mtx; // Мьютекс для защиты доступа к вектору
+    char symbol; // Переменная для хранения символа
+    
     // Тестирование мьютекса
     auto start = chrono::high_resolution_clock::now(); // Запуск таймера
     vector<thread> threads; // Вектор потоков
-    for (int i = 0; i < 4; i++) {
-        threads.emplace_back(threadWithMutex, ref(ch), ref(mtx), ref(symbols)); // Запуск потоков
+    for (int i = 0; i < 4; i++) { // Запуск 4 потоков
+        threads.emplace_back(threadMutex, ref(symbol), ref(mtx), ref(allSymbols)); // Создание потоков
     }
     for (auto& t : threads) {
         t.join(); // Ожидание завершения потоков
     }
-    auto end = chrono::high_resolution_clock::now(); // Окончание таймера
-    cout << "Время работы с мьютексом: " << chrono::duration<double>(end - start).count() << " сек\n"; // Вывод времени
+    auto end = chrono::high_resolution_clock::now(); // Завершение таймера
+    chrono::duration<double> elapsed = end - start; // Вычисление времени выполнения
+    cout << "Mutex time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
     threads.clear(); // Очистка вектора потоков
-    symbols.clear(); // Очистка вектора символов
+    allSymbols.clear(); // Очистка вектора символов
 
     // Тестирование семафора
-    SimpleSemaphore sem(4); // Инициализация семафора
+    Semaphore sem(4); // Инициализация семафора с максимальным значением 4
     start = chrono::high_resolution_clock::now(); // Запуск таймера
     for (int i = 0; i < 4; i++) {
-        threads.emplace_back(threadWithSemaphore, ref(ch), ref(sem), ref(symbols)); // Запуск потоков
+        threads.emplace_back(threadSemaphore, ref(symbol), ref(sem), ref(allSymbols)); // Создание потоков
     }
     for (auto& t : threads) {
         t.join(); // Ожидание завершения потоков
     }
-    end = chrono::high_resolution_clock::now(); // Окончание таймера
-    cout << "Время работы с семафором: " << chrono::duration<double>(end - start).count() << " сек\n"; // Вывод времени
+    end = chrono::high_resolution_clock::now(); // Завершение таймера
+    elapsed = end - start; // Вычисление времени выполнения
+    cout << "Semaphore time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
     threads.clear(); // Очистка вектора потоков
-    symbols.clear(); // Очистка вектора символов
+    allSymbols.clear(); // Очистка вектора символов
 
     // Тестирование упрощенного семафора
-    SimpleSemaphoreSlim semSlim(4, 4); // Инициализация упрощенного семафора
+    SemaphoreSlim semSlim(4, 4); // Инициализация упрощенного семафора
     start = chrono::high_resolution_clock::now(); // Запуск таймера
     for (int i = 0; i < 4; i++) {
-        threads.emplace_back(threadWithSemaphoreSlim, ref(ch), ref(semSlim), ref(symbols)); // Запуск потоков
+        threads.emplace_back(threadSemaphoreSlim, ref(symbol), ref(semSlim), ref(allSymbols)); // Создание потоков
     }
     for (auto& t : threads) {
         t.join(); // Ожидание завершения потоков
     }
-    end = chrono::high_resolution_clock::now(); // Окончание таймера
-    cout << "Время работы с упрощенным семафором: " << chrono::duration<double>(end - start).count() << " сек\n"; // Вывод времени
+    end = chrono::high_resolution_clock::now(); // Завершение таймера
+    elapsed = end - start; // Вычисление времени выполнения
+    cout << "SemaphoreSlim time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
     threads.clear(); // Очистка вектора потоков
-    symbols.clear(); // Очистка вектора символов
+    allSymbols.clear(); // Очистка вектора символов
 
     // Тестирование барьера
-    SimpleBarrier barrier(4); // Инициализация барьера
+    Barrier barrier(4); // Инициализация барьера для 4 потоков
     start = chrono::high_resolution_clock::now(); // Запуск таймера
     for (int i = 0; i < 4; i++) {
-        threads.emplace_back(threadWithBarrier, ref(ch), ref(barrier), ref(symbols)); // Запуск потоков
+        threads.emplace_back(threadBarrier, ref(symbol), ref(barrier), ref(allSymbols)); // Создание потоков
     }
     for (auto& t : threads) {
         t.join(); // Ожидание завершения потоков
     }
-    end = chrono::high_resolution_clock::now(); // Окончание таймера
-    cout << "Время работы с барьером: " << chrono::duration<double>(end - start).count() << " сек\n"; // Вывод времени
+    end = chrono::high_resolution_clock::now(); // Завершение таймера
+    elapsed = end - start; // Вычисление времени выполнения
+    cout << "Barrier time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
     threads.clear(); // Очистка вектора потоков
-    symbols.clear(); // Очистка вектора символов
+    allSymbols.clear(); // Очистка вектора символов
+
+    // Тестирование спинлока
+    atomic_flag spinLock = ATOMIC_FLAG_INIT; // Инициализация спинлока
+    start = chrono::high_resolution_clock::now(); // Запуск таймера
+    for (int i = 0; i < 4; i++) {
+        threads.emplace_back(threadSpinLock, ref(symbol), ref(spinLock), ref(allSymbols)); // Создание потоков
+    }
+    for (auto& t : threads) {
+        t.join(); // Ожидание завершения потоков
+    }
+    end = chrono::high_resolution_clock::now(); // Завершение таймера
+    elapsed = end - start; // Вычисление времени выполнения
+    cout << "SpinLock time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
+    threads.clear(); // Очистка вектора потоков
+    allSymbols.clear(); // Очистка вектора символов
+
+    // Тестирование спин-ожидания
+    start = chrono::high_resolution_clock::now(); // Запуск таймера
+    for (int i = 0; i < 4; i++) {
+        threads.emplace_back(threadSpinWait, ref(symbol), ref(spinLock), ref(allSymbols)); // Создание потоков
+    }
+    for (auto& t : threads) {
+        t.join(); // Ожидание завершения потоков
+    }
+    end = chrono::high_resolution_clock::now(); // Завершение таймера
+    elapsed = end - start; // Вычисление времени выполнения
+    cout << "SpinWait time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
+    threads.clear(); // Очистка вектора потоков
+    allSymbols.clear(); // Очистка вектора символов
 
     // Тестирование монитора
-    SimpleMonitor monitor; // Инициализация монитора
+    Monitor monitor; // Инициализация монитора
     start = chrono::high_resolution_clock::now(); // Запуск таймера
     for (int i = 0; i < 4; i++) {
-        threads.emplace_back(threadWithMonitor, ref(ch), ref(monitor), ref(symbols)); // Запуск потоков
+        threads.emplace_back(threadMonitor, ref(symbol), ref(monitor), ref(allSymbols)); // Создание потоков
     }
     for (auto& t : threads) {
         t.join(); // Ожидание завершения потоков
     }
-    end = chrono::high_resolution_clock::now(); // Окончание таймера
-    cout << "Время работы с монитором: " << chrono::duration<double>(end - start).count() << " сек\n"; // Вывод времени
+    end = chrono::high_resolution_clock::now(); // Завершение таймера
+    elapsed = end - start; // Вычисление времени выполнения
+    cout << "Monitor time: " << elapsed.count() << " seconds\n"; // Вывод времени выполнения
 
     return 0; // Завершение программы
 }
