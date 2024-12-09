@@ -2,9 +2,10 @@
 #include <vector>      // Для использования векторов
 #include <thread>      // Для работы с потоками
 #include <chrono>      // Для работы с временем
-#include <mutex>       // Для использования мьютексов
 #include <iomanip>     // Для форматирования вывода
 #include <ctime>       // Для работы с временем
+#include <sstream>     // Для работы со строками
+#include <random>      // Для генерации случайных чисел
 
 using namespace std;
 
@@ -17,111 +18,135 @@ struct Training {
 
 // Функция для проверки, является ли дата тренировок днем недели D
 bool isTrainingOnDay(const Training& training, int dayOfWeek) {
-    // Преобразуем строку даты в структуру tm
     tm tm = {};
-    stringstream ss(training.date); // Создаем строковый поток из даты
-    ss >> get_time(&tm, "%Y-%m-%d"); // Заполняем структуру tm из строки
-    // Проверяем, соответствует ли день недели заданному
-    return (tm.tm_wday == dayOfWeek); // Возвращаем true, если день недели совпадает
-}
-
-// Функция обработки данных без многопоточности
-void processWithoutThreads(const vector<Training>& trainings, int dayOfWeek, vector<Training>& results) {
-    for (const auto& training : trainings) { // Проходим по всем тренировкам
-        if (isTrainingOnDay(training, dayOfWeek)) { // Проверяем, совпадает ли день недели
-            results.push_back(training); // Если совпадает, добавляем в результаты
-        }
-    }
+    stringstream ss(training.date);
+    ss >> get_time(&tm, "%Y-%m-%d");
+    return (tm.tm_wday == dayOfWeek);
 }
 
 // Функция обработки данных с использованием многопоточности
 void processWithThreads(const vector<Training>& trainings, int dayOfWeek, vector<Training>& results, size_t start, size_t end) {
-    for (size_t i = start; i < end; ++i) { // Проходим по подмножеству тренировок
-        if (isTrainingOnDay(trainings[i], dayOfWeek)) { // Проверяем, совпадает ли день недели
-            results.push_back(trainings[i]); // Если совпадает, добавляем в результаты
+    for (size_t i = start; i < end; ++i) {
+        if (isTrainingOnDay(trainings[i], dayOfWeek)) {
+            results.push_back(trainings[i]);
         }
     }
 }
 
 // Функция для выполнения многопоточной обработки
 void multiThreadedProcessing(const vector<Training>& trainings, int dayOfWeek, vector<Training>& results, int numThreads) {
-    vector<thread> threads; // Вектор для хранения потоков
-    size_t trainingsPerThread = trainings.size() / numThreads; // Количество тренировок на поток
+    vector<thread> threads;
+    size_t trainingsPerThread = trainings.size() / numThreads;
 
     for (int i = 0; i < numThreads; ++i) {
-        size_t start = i * trainingsPerThread; // Начало диапазона для потока
-        size_t end = (i == numThreads - 1) ? trainings.size() : start + trainingsPerThread; // Конец диапазона
-        threads.emplace_back(processWithThreads, ref(trainings), dayOfWeek, ref(results), start, end); // Создаем поток
+        size_t start = i * trainingsPerThread;
+        size_t end = (i == numThreads - 1) ? trainings.size() : start + trainingsPerThread;
+        threads.emplace_back(processWithThreads, ref(trainings), dayOfWeek, ref(results), start, end);
     }
 
     for (auto& t : threads) {
-        t.join(); // Ожидаем завершения всех потоков
+        t.join();
+    }
+}
+
+// Функция для генерации случайных данных о тренировках
+void generateRandomTrainings(vector<Training>& trainings, int size, const string& startDate, const string& endDate) {
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<> dis(0, 23);
+    uniform_int_distribution<> disMin(0, 59);
+
+    tm startTm = {};
+    stringstream ssStart(startDate);
+    ssStart >> get_time(&startTm, "%Y-%m-%d");
+    time_t startEpoch = mktime(&startTm);
+
+    tm endTm = {};
+    stringstream ssEnd(endDate);
+    ssEnd >> get_time(&endTm, "%Y-%m-%d");
+    time_t endEpoch = mktime(&endTm);
+
+    vector<string> coaches = {"Иванов И.И.", "Петров П.П.", "Сидоров С.С.", "Кузнецов А.А.", "Смирнов В.В."};
+
+    for (int i = 0; i < size; ++i) {
+        time_t randomTime = startEpoch + rand() % (endEpoch - startEpoch + 1);
+        tm* randomTm = localtime(&randomTime);
+
+        string date = to_string(randomTm->tm_year + 1900) + "-" +
+                      to_string(randomTm->tm_mon + 1) + "-" +
+                      to_string(randomTm->tm_mday);
+
+        string time = to_string(dis(gen)) + ":" + (disMin(gen) < 10 ? "0" : "") + to_string(disMin(gen));
+
+        string coachName = coaches[rand() % coaches.size()];
+
+        trainings.push_back({date, time, coachName});
     }
 }
 
 int main() {
-    // Задаем данные
     int size;          // Количество тренировок
     int numThreads;    // Количество параллельных потоков
     int dayOfWeek;     // 0 - воскресенье, 1 - понедельник, ..., 6 - суббота
+    string startDate;  // Начальная дата
+    string endDate;    // Конечная дата
 
-    cout << "Введите размер массива данных (количество тренировок): ";
-    cin >> size; // Ввод количества тренировок
+    cout << "Введите количество тренировок: ";
+    cin >> size;
 
     cout << "Введите количество параллельных потоков: ";
-    cin >> numThreads; // Ввод количества потоков
+    cin >> numThreads;
 
     cout << "Введите день недели (0 - воскресенье, 1 - понедельник, ..., 6 - суббота): ";
-    cin >> dayOfWeek; // Ввод дня недели
+    cin >> dayOfWeek;
 
-    vector<Training> trainings(size); // Вектор для хранения тренировок
-    vector<Training> results; // Вектор для хранения результатов
+    cout << "Введите начальную дату (YYYY-MM-DD): ";
+    cin >> startDate;
 
-    // Заполнение массива тренировок (например, случайными данными)
-    for (int i = 0; i < size; ++i) {
-        cout << "Введите дату (YYYY-MM-DD) для тренировки " << (i + 1) << ": ";
-        cin >> trainings[i].date; // Ввод даты тренировки
-        cout << "Введите время (HH:MM) для тренировки " << (i + 1) << ": ";
-        cin >> trainings[i].time; // Ввод времени тренировки
-        cin.ignore(); // Игнорируем символ новой строки после ввода времени
-        cout << "Введите ФИО тренера для тренировки " << (i + 1) << ": ";
-        getline(cin, trainings[i].coachName); // Ввод ФИО тренера с пробелами
+    cout << "Введите конечную дату (YYYY-MM-DD): ";
+    cin >> endDate;
+
+    vector<Training> trainings;
+    vector<Training> results;
+
+    // Генерация случайных тренировок
+    generateRandomTrainings(trainings, size, startDate, endDate);
+
+    // Обработка без использования многопоточности
+    auto startSingle = chrono::high_resolution_clock::now();
+    for (const auto& training : trainings) {
+        if (isTrainingOnDay(training, dayOfWeek)) {
+            results.push_back(training);
+        }
     }
+    auto endSingle = chrono::high_resolution_clock::now();
+    double timeWithoutThreads = chrono::duration<double>(endSingle - startSingle).count();
 
-    // Обработка без многопоточности
-    auto start = chrono::high_resolution_clock::now(); // Запоминаем время начала
-    processWithoutThreads(trainings, dayOfWeek, results); // Обработка данных
-    auto end = chrono::high_resolution_clock::now(); // Запоминаем время окончания
-    double timeWithoutThreads = chrono::duration<double>(end - start).count(); // Вычисляем время обработки
-
-    // Вывод результатов
-    cout << "Результаты обработки без многопоточности:\n";
+    // Вывод результатов без многопоточности
+    cout << "Результаты обработки без использования многопоточности:\n";
     for (const auto& training : results) {
-        cout << training.date << " " << training.time << " " << training.coachName << endl; // Выводим результаты
+        cout << training.date << " " << training.time << " " << training.coachName << endl;
     }
-    
-    // Устанавливаем формат вывода времени
-    cout << fixed << setprecision(5); // Устанавливаем фиксированное число десятичных знаков
-    cout << "Время обработки без многопоточности: " << timeWithoutThreads << " секунд\n"; // Выводим время обработки
 
-    // Очистка результатов для следующей обработки
-    results.clear(); // Очищаем вектор результатов
+    // Очищаем результаты для многопоточной обработки
+    results.clear();
 
     // Обработка с использованием многопоточности
-    start = chrono::high_resolution_clock::now(); // Запоминаем время начала
-    multiThreadedProcessing(trainings, dayOfWeek, results, numThreads); // Обработка данных
-    end = chrono::high_resolution_clock::now(); // Запоминаем время окончания
-    double timeWithThreads = chrono::duration<double>(end - start).count(); // Вычисляем время обработки
+    auto startMulti = chrono::high_resolution_clock::now();
+    multiThreadedProcessing(trainings, dayOfWeek, results, numThreads);
+    auto endMulti = chrono::high_resolution_clock::now();
+    double timeWithThreads = chrono::duration<double>(endMulti - startMulti).count();
 
-    // Вывод результатов
+    // Вывод результатов с многопоточностью
     cout << "Результаты обработки с использованием многопоточности:\n";
     for (const auto& training : results) {
-        cout << training.date << " " << training.time << " " << training.coachName << endl; // Выводим результаты
+        cout << training.date << " " << training.time << " " << training.coachName << endl;
     }
-    
-    // Устанавливаем формат вывода времени
-    cout << fixed << setprecision(5); // Устанавливаем фиксированное число десятичных знаков
-    cout << "Время обработки с использованием многопоточности: " << timeWithThreads << " секунд\n"; // Выводим время обработки
 
-    return 0; // Завершаем программу
+    // Устанавливаем формат вывода времени
+    cout << fixed << setprecision(5);
+    cout << "Время обработки без использования многопоточности: " << timeWithoutThreads << " секунд\n";
+    cout << "Время обработки с использованием многопоточности: " << timeWithThreads << " секунд\n";
+
+    return 0;
 }
